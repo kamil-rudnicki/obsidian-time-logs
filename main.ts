@@ -92,9 +92,9 @@ export default class TimeLogsPlugin extends Plugin {
 		return `${year}-${month}-${day} -${hours}:${minutes}`;
 	}
 
-	private async collectTimeLogRows(): Promise<Array<{ task: string; timeLog: string; file: string; line: number }>> {
+	private async collectTimeLogRows(): Promise<Array<{ task: string; from: string; to: string; file: string; line: number }>> {
 		const markdownFiles = this.app.vault.getMarkdownFiles();
-		const rows: Array<{ task: string; timeLog: string; file: string; line: number }> = [];
+		const rows: Array<{ task: string; from: string; to: string; file: string; line: number }> = [];
 		const timeLogsRegex = /\[time-logs::(.*?)\]/;
 		const dateRegex = /\b\d{4}-\d{2}-\d{2}\b/;
 
@@ -115,11 +115,16 @@ export default class TimeLogsPlugin extends Plugin {
 					.filter((s) => s.length > 0);
 				for (const timeLog of timeLogs) {
 					if (!dateRegex.test(timeLog)) continue;
-					rows.push({ task: taskText, timeLog, file: file.path, line: i + 1 });
+					const { from, to } = this.parseFromTo(timeLog);
+					rows.push({ task: taskText, from, to, file: file.path, line: i + 1 });
 				}
 			}
 		}
-		rows.sort((a, b) => a.timeLog.localeCompare(b.timeLog));
+		rows.sort((a, b) => {
+			const aKey = a.from || a.to || '';
+			const bKey = b.from || b.to || '';
+			return aKey.localeCompare(bKey);
+		});
 		return rows;
 	}
 
@@ -130,12 +135,49 @@ export default class TimeLogsPlugin extends Plugin {
 		return normalized;
 	}
 
-	private createCsvContent(rows: Array<{ task: string; timeLog: string; file: string; line: number }>): string {
-		const header = ['Task', 'Time Log', 'File', 'Line'];
-		const csvRows = [header, ...rows.map((r) => [r.task, r.timeLog, r.file, String(r.line)])];
+	private createCsvContent(rows: Array<{ task: string; from: string; to: string; file: string; line: number }>): string {
+		const header = ['Task', 'From', 'To', 'File', 'Line'];
+		const csvRows = [header, ...rows.map((r) => [r.task, r.from, r.to, r.file, String(r.line)])];
 		return csvRows
 			.map((cols) => cols.map((c) => this.csvEscape(c)).join(','))
 			.join('\n');
+	}
+
+	private parseFromTo(timeLog: string): { from: string; to: string } {
+		// Normalize whitespace
+		const trimmed = timeLog.trim();
+		const dateMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+		if (!dateMatch) return { from: '', to: '' };
+		const date = dateMatch[1];
+		const rest = trimmed.slice(date.length).trim();
+
+		// Patterns:
+		// 1) "-HH:MM[:SS]" → To only
+		const toOnly = rest.match(/^-(\d{2}:\d{2}(?::\d{2})?)$/);
+		if (toOnly) return { from: '', to: `${date} ${this.ensureSeconds(toOnly[1])}` };
+
+		// 2) "HH:MM[:SS]-" → From only
+		const fromOnly = rest.match(/^(\d{2}:\d{2}(?::\d{2})?)-$/);
+		if (fromOnly) return { from: `${date} ${this.ensureSeconds(fromOnly[1])}`, to: '' };
+
+		// 3) "HH:MM[:SS]-HH:MM[:SS]" → From and To
+		const range = rest.match(/^(\d{2}:\d{2}(?::\d{2})?)-(\d{2}:\d{2}(?::\d{2})?)$/);
+		if (range) {
+			return {
+				from: `${date} ${this.ensureSeconds(range[1])}`,
+				to: `${date} ${this.ensureSeconds(range[2])}`
+			};
+		}
+
+		// Fallback: if rest is a single time treat it as To (matches plugin's " -HH:MM")
+		const single = rest.match(/^(\d{2}:\d{2}(?::\d{2})?)$/);
+		if (single) return { from: '', to: `${date} ${this.ensureSeconds(single[1])}` };
+
+		return { from: '', to: '' };
+	}
+
+	private ensureSeconds(time: string): string {
+		return time.length === 5 ? `${time}:00` : time;
 	}
 
 	private csvEscape(value: string): string {
