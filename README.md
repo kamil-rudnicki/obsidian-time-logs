@@ -1,114 +1,76 @@
-# Obsidian Sample Plugin
+# ⏱️ Time Logs for Obsidian
 
-Track time simply with a keyboard shortcut.
+Track when you finish tasks with one shortcut. Your time, in your notes.
 
-Story:
-I tried many ways to track my time. But this is what works.
-Just add timestamp to each line when you ended doing it. Later you can query row data using dataview.
+### ✨ Why Time Logs
+- ⚡️ **Fast**: Append a timestamp to the current line with a single command.
+- 🧩 **Flexible**: Works with plain text or checkboxes. No new workflow to learn.
+- 📦 **Portable**: Export a clean CSV across your entire vault in seconds.
+- 🔒 **Private**: Everything stays local in your Obsidian vault.
 
-Capture your time:
-It should be simple and it is.
-It should be flexible and it is.
-It should be seamless and it is.
-
-You can have access to row data and can do anything you want - in Dataview, in Duckdb, in Clickhouse, in Excel - but not here.
-
-This appears to be a request for developing an Obsidian plugin or feature that would:
-- Add time tracking functionality to specific lines in notes
-- Include a start timer button
-- Potentially integrate with checkbox functionality (starting/stopping when checking/unchecking)
-
----
-
-This is a sample plugin for Obsidian (https://obsidian.md).
-
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
-
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
-
-## First time developing plugins?
-
-Quick starting guide for new plugin devs:
-
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
-
-## Releasing new releases
-
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
-
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
-
-## Adding your plugin to the community plugin list
-
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+### 🧭 How it works
+- ▶️ Run the command: **Add time log** (assign a hotkey in Obsidian → Settings → Hotkeys).
+- The plugin appends a marker like this to the end of the line:
+```text
+[time-logs:: 2025-08-28 -14:32; ]
 ```
+- 📤 Later, run: **Export time logs to CSV** to generate a CSV you can analyze anywhere (Dataview, Excel, DuckDB, ClickHouse).
 
-If you have multiple URLs, you can also do:
+### ⌨️ Commands
+- 🕒 **Add time log**: Append a timestamp marker to the current line.
+- 📄 **Export time logs to CSV**: Scan your vault and export a `Task, From, To, File, Line` CSV.
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
+### ⚙️ Settings
+- 📁 **CSV export path**: Choose where the CSV is written (vault‑relative). Empty = `time-logs.csv` at vault root.
+
+### 📊 Sample Dataview
+
+Sample `dataviewjs` you can use to insert list of time entries into your note:
+
+```js
+const MAX_TASK_LENGTH = 50;
+const START_DATE = "2025-01-01"; // Start date (inclusive)
+const END_DATE = "2030-12-31";   // End date (inclusive)
+
+const tasks = dv.pages()
+    .file.tasks
+    .where(t => t.text.includes("time-logs::"));
+
+const rows = [];
+tasks.forEach(t => {
+    const match = t.text.match(/\[time-logs::\s*([^\]]+)\]/);
+    if (match) {
+        const timeLogString = match[1].trim();
+        let taskText = t.text.replace(/\[time-logs::[^\]]+\]/, "").trim();
+        
+        if (taskText.length > MAX_TASK_LENGTH) {
+            taskText = taskText.substring(0, MAX_TASK_LENGTH) + "...";
+        }
+        
+        // Split time-logs by semicolon and create a row for each
+        const timeLogs = timeLogString.split(';')
+            .map(log => log.trim())
+            .filter(log => log.length > 0); // Remove empty entries
+        
+        timeLogs.forEach(timeLog => {
+            // Extract date from time-log (assuming format: YYYY-MM-DD -HH:MM)
+            const dateMatch = timeLog.match(/(\d{4}-\d{2}-\d{2})/);
+            if (dateMatch) {
+                const logDate = dateMatch[1];
+                if (logDate >= START_DATE && logDate <= END_DATE) {
+                    rows.push([taskText, timeLog, t.link]);
+                }
+            }
+        });
     }
-}
+});
+rows.sort((a, b) => a[1].localeCompare(b[1]));
+dv.table(["Task", "Time Log", "File"], rows);
 ```
 
-## API Documentation
+### 🏷️ Keywords
+Timesheets, time tracker, timer, clock in/out, time logs, time tracking.
 
-See https://github.com/obsidianmd/obsidian-api
+### 📝 License
+MIT © Kamil Rudnicki · 🔗 Learn more: https://kamilrudnicki.com
+

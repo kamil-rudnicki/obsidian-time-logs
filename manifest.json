@@ -3,9 +3,8 @@
 	"name": "Time Logs",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "A simple plugin to add time logs in the format [time-logs:: date -time; ] to your notes.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Add time logs in the format [time-logs:: date -time; ] to make your time tracking easier",
+	"author": "Kamil Rudnicki",
+	"authorUrl": "https://kamilrudnicki.com",
 	"isDesktopOnly": true
 }
