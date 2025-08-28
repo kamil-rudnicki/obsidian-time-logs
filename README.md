@@ -1,5 +1,25 @@
 # Obsidian Sample Plugin
 
+Track time simply with a keyboard shortcut.
+
+Story:
+I tried many ways to track my time. But this is what works.
+Just add timestamp to each line when you ended doing it. Later you can query row data using dataview.
+
+Capture your time:
+It should be simple and it is.
+It should be flexible and it is.
+It should be seamless and it is.
+
+You can have access to row data and can do anything you want - in Dataview, in Duckdb, in Clickhouse, in Excel - but not here.
+
+This appears to be a request for developing an Obsidian plugin or feature that would:
+- Add time tracking functionality to specific lines in notes
+- Include a start timer button
+- Potentially integrate with checkbox functionality (starting/stopping when checking/unchecking)
+
+---
+
 This is a sample plugin for Obsidian (https://obsidian.md).
 
 This project uses TypeScript to provide type checking and documentation.
