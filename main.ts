@@ -1,17 +1,31 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
+import { App, Editor, FuzzySuggestModal, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile } from 'obsidian';
 import * as fs from 'fs';
 import * as nodePath from 'path';
 
+interface RecentTask {
+	filePath: string;
+	taskSnippet: string; // First 50 chars of the task
+	fullLine: string; // The full line for better matching
+	lineNumber: number; // Last known line number
+	lastUsed: number; // Timestamp
+}
+
 interface TimeLogsSettings {
 	csvExportPath: string; // vault-relative path, empty → default 'time-logs.csv'
+	autoLogOnTaskDone: boolean;
+	recentTasks: RecentTask[]; // Last 50 tasks that had time tracked
 }
 
 const DEFAULT_SETTINGS: TimeLogsSettings = {
-	csvExportPath: ''
+	csvExportPath: '',
+	autoLogOnTaskDone: true,
+	recentTasks: []
 };
 
 export default class TimeLogsPlugin extends Plugin {
 	settings: TimeLogsSettings;
+	private previousContentByPath: Map<string, string> = new Map();
+	private programmaticUpdatePaths: Set<string> = new Set();
 
 	async onload() {
 		await this.loadSettings();
@@ -41,6 +55,46 @@ export default class TimeLogsPlugin extends Plugin {
 				}
 			}
 		});
+
+		// Add the "Quick time log" command with fuzzy suggest modal
+		this.addCommand({
+			id: 'quick-time-log',
+			name: 'Quick time log (recent tasks)',
+			callback: () => {
+				new RecentTaskModal(this.app, this).open();
+			}
+		});
+
+		// Initialize content cache only when auto-log is enabled
+		if (this.settings.autoLogOnTaskDone) {
+			await this.initializeFileContentCache();
+		}
+		// Register listener for auto time-log on task completion
+		this.registerEvent(this.app.vault.on('modify', async (file) => {
+			if (!(file instanceof TFile) || file.extension !== 'md') return;
+			// If disabled, avoid reading file or touching caches to save CPU/memory
+			if (!this.settings.autoLogOnTaskDone) return;
+			if (this.programmaticUpdatePaths.has(file.path)) return;
+			const newContent = await this.app.vault.read(file);
+			const prevContent = this.previousContentByPath.get(file.path);
+			// Keep cache updated while enabled
+			if (prevContent === undefined) {
+				this.previousContentByPath.set(file.path, newContent);
+				return;
+			}
+			const maybeUpdated = this.addTimeLogForDoneTasks(prevContent, newContent, file.path);
+			if (maybeUpdated !== newContent) {
+				try {
+					this.programmaticUpdatePaths.add(file.path);
+					await this.app.vault.modify(file, maybeUpdated);
+					this.previousContentByPath.set(file.path, maybeUpdated);
+				} finally {
+					this.programmaticUpdatePaths.delete(file.path);
+				}
+			} else {
+				this.previousContentByPath.set(file.path, newContent);
+			}
+		}));
 	}
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -58,6 +112,7 @@ export default class TimeLogsPlugin extends Plugin {
 		const currentTime = this.getCurrentFormattedTime();
 		const cursor = editor.getCursor();
 		const currentLine = editor.getLine(cursor.line);
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		
 		// Check if the current line already contains a time-logs entry
 		const timeLogsRegex = /\[time-logs::(.*?)\]/;
@@ -72,16 +127,135 @@ export default class TimeLogsPlugin extends Plugin {
 			// Replace the entire line
 			editor.setLine(cursor.line, newLine);
 		} else {
-			// Insert new time-logs entry at the end of the current line
+			// Insert new time-logs entry before existing inline dataviews if present, otherwise at the end
 			const timeLogEntry = `[time-logs:: ${currentTime}; ]`;
-			// Add space if the line doesn't end with whitespace
-			const separator = currentLine.length > 0 && !currentLine.endsWith(' ') ? ' ' : '';
-			const newLine = currentLine + separator + timeLogEntry;
+			const dvIndex = this.findFirstInlineDataviewIndex(currentLine);
+			let newLine: string;
+			if (dvIndex !== -1) {
+				newLine = this.insertBeforeInlineDataview(currentLine, timeLogEntry);
+			} else {
+				// Add space if the line doesn't end with whitespace
+				const separator = currentLine.length > 0 && !/\s$/.test(currentLine) ? ' ' : '';
+				newLine = currentLine + separator + timeLogEntry;
+			}
 			editor.setLine(cursor.line, newLine);
+		}
+
+		// Track this task in recent tasks if we have a valid file
+		if (view?.file) {
+			this.addToRecentTasks(view.file.path, currentLine, cursor.line);
 		}
 	}
 
-	private getCurrentFormattedTime(): string {
+	private addToRecentTasks(filePath: string, fullLine: string, lineNumber: number) {
+		const taskText = this.normalizeTaskText(fullLine);
+		const taskSnippet = taskText.slice(0, 50);
+		
+		// Remove existing entry for the same task if it exists
+		this.settings.recentTasks = this.settings.recentTasks.filter(task => 
+			!(task.filePath === filePath && task.taskSnippet === taskSnippet)
+		);
+		
+		// Add to the beginning of the list
+		this.settings.recentTasks.unshift({
+			filePath,
+			taskSnippet,
+			fullLine,
+			lineNumber,
+			lastUsed: Date.now()
+		});
+		
+		// Keep only the last 50 tasks
+		this.settings.recentTasks = this.settings.recentTasks.slice(0, 50);
+		
+		// Save settings
+		this.saveSettings();
+	}
+
+	private async initializeFileContentCache(): Promise<void> {
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			try {
+				const content = await this.app.vault.read(file);
+				this.previousContentByPath.set(file.path, content);
+			} catch (_e) {
+				// ignore
+			}
+		}
+	}
+
+	private addTimeLogForDoneTasks(previousContent: string, newContent: string, filePath?: string): string {
+		const prevLines = previousContent.split(/\r?\n/);
+		const currLines = newContent.split(/\r?\n/);
+		const minLen = Math.min(prevLines.length, currLines.length);
+		let changed = false;
+		for (let i = 0; i < minLen; i++) {
+			const before = prevLines[i];
+			const after = currLines[i];
+			if (before === after) continue;
+			if (this.isUncheckedTaskLine(before) && this.isCheckedTaskLine(after) && !this.containsTimeLogs(after)) {
+				currLines[i] = this.appendTimeLogToLine(after, this.getCurrentFormattedTime());
+				changed = true;
+				
+				// Track this task in recent tasks
+				if (filePath) {
+					this.addToRecentTasks(filePath, after, i);
+				}
+			}
+		}
+		return changed ? currLines.join('\n') : newContent;
+	}
+
+	private isUncheckedTaskLine(line: string): boolean {
+		return /^\s*-\s\[\s\]\s/.test(line);
+	}
+
+	private isCheckedTaskLine(line: string): boolean {
+		return /^\s*-\s\[\s*[xX]\s*\]\s/.test(line);
+	}
+
+	private containsTimeLogs(line: string): boolean {
+		return /\[time-logs::(.*?)\]/.test(line);
+	}
+
+	private appendTimeLogToLine(line: string, currentTime: string): string {
+		const timeLogsRegex = /\[time-logs::(.*?)\]/;
+		if (timeLogsRegex.test(line)) {
+			return line.replace(timeLogsRegex, (_m, inner) => {
+				const existingLogs = String(inner).trim();
+				const newLogs = existingLogs ? `${existingLogs} ${currentTime};` : ` ${currentTime};`;
+				return `[time-logs::${newLogs} ]`;
+			});
+		} else {
+			const dvIndex = this.findFirstInlineDataviewIndex(line);
+			const timeLogEntry = `[time-logs:: ${currentTime}; ]`;
+			if (dvIndex !== -1) {
+				return this.insertBeforeInlineDataview(line, timeLogEntry);
+			}
+			const separator = line.length > 0 && !/\s$/.test(line) ? ' ' : '';
+			return line + separator + timeLogEntry;
+		}
+	}
+
+	findFirstInlineDataviewIndex(line: string): number {
+		// Matches inline dataview fields like [key:: value] with optional spaces around '::'
+		const matchIndex = line.search(/\[[^\[\]\n]*\s*::\s*[^\[\]\n]*\]/);
+		return matchIndex;
+	}
+
+	insertBeforeInlineDataview(line: string, insertion: string): string {
+		const idx = this.findFirstInlineDataviewIndex(line);
+		if (idx === -1) {
+			const separator = line.length > 0 && !/\s$/.test(line) ? ' ' : '';
+			return line + separator + insertion;
+		}
+		const before = line.slice(0, idx);
+		const after = line.slice(idx);
+		const sepBefore = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+		const sepAfter = after.length > 0 && !/^\s/.test(after) ? ' ' : '';
+		return before + sepBefore + insertion + sepAfter + after;
+	}
+
+	getCurrentFormattedTime(): string {
 		const now = new Date();
 		const year = now.getFullYear();
 		const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -128,7 +302,7 @@ export default class TimeLogsPlugin extends Plugin {
 		return rows;
 	}
 
-	private normalizeTaskText(text: string): string {
+	normalizeTaskText(text: string): string {
 		let normalized = text;
 		if (normalized.startsWith('- [ ]')) normalized = normalized.slice(5).trim();
 		if (normalized.startsWith('- [x]') || normalized.startsWith('- [X]')) normalized = normalized.slice(5).trim();
@@ -231,6 +405,141 @@ export default class TimeLogsPlugin extends Plugin {
 	}
 }
 
+class RecentTaskModal extends FuzzySuggestModal<RecentTask> {
+	plugin: TimeLogsPlugin;
+
+	constructor(app: App, plugin: TimeLogsPlugin) {
+		super(app);
+		this.plugin = plugin;
+		this.setPlaceholder('Type to search recent tasks...');
+	}
+
+	getItems(): RecentTask[] {
+		return this.plugin.settings.recentTasks;
+	}
+
+	getItemText(item: RecentTask): string {
+		const fileName = item.filePath.split('/').pop() || item.filePath;
+		return `${item.taskSnippet} (${fileName})`;
+	}
+
+	onChooseItem(item: RecentTask, evt: MouseEvent | KeyboardEvent): void {
+		this.addTimeLogToRecentTask(item);
+	}
+
+	private async addTimeLogToRecentTask(recentTask: RecentTask): Promise<void> {
+		try {
+			// Get the file
+			const file = this.app.vault.getAbstractFileByPath(recentTask.filePath);
+			if (!(file instanceof TFile)) {
+				new Notice('File not found. Removing from recent tasks.');
+				this.removeFromRecentTasks(recentTask);
+				return;
+			}
+
+			// Open the file and get the view
+			const leaf = this.app.workspace.getUnpinnedLeaf();
+			await leaf.openFile(file);
+			
+			// Get the markdown view and editor
+			const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!view) {
+				new Notice('Could not open file in editor.');
+				return;
+			}
+			
+			const editor = view.editor;
+
+			// Read the file content to find the target line
+			const content = await this.app.vault.read(file);
+			const lines = content.split(/\r?\n/);
+
+			// Try to find the task by exact line match first, then by task snippet
+			let targetLineIndex = -1;
+			let targetLine = '';
+
+			// First, try the last known line number
+			if (recentTask.lineNumber >= 0 && recentTask.lineNumber < lines.length) {
+				const candidateLine = lines[recentTask.lineNumber];
+				const candidateTaskText = this.plugin.normalizeTaskText(candidateLine);
+				if (candidateTaskText.startsWith(recentTask.taskSnippet.slice(0, 30))) {
+					targetLineIndex = recentTask.lineNumber;
+					targetLine = candidateLine;
+				}
+			}
+
+			// If not found at expected line, search through all lines
+			if (targetLineIndex === -1) {
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i];
+					const taskText = this.plugin.normalizeTaskText(line);
+					if (taskText.startsWith(recentTask.taskSnippet.slice(0, 30))) {
+						targetLineIndex = i;
+						targetLine = line;
+						break;
+					}
+				}
+			}
+
+			if (targetLineIndex === -1) {
+				new Notice('Task not found in file. Removing from recent tasks.');
+				this.removeFromRecentTasks(recentTask);
+				return;
+			}
+
+			// Position cursor on the target line
+			editor.setCursor({ line: targetLineIndex, ch: targetLine.length });
+
+			// Add time log to the found line
+			const currentTime = this.plugin.getCurrentFormattedTime();
+			const timeLogsRegex = /\[time-logs::(.*?)\]/;
+			const match = targetLine.match(timeLogsRegex);
+
+			let newLine: string;
+			if (match) {
+				// Append to existing time-logs entry
+				const existingLogs = match[1].trim();
+				const newLogs = existingLogs ? `${existingLogs} ${currentTime};` : ` ${currentTime};`;
+				newLine = targetLine.replace(timeLogsRegex, `[time-logs::${newLogs} ]`);
+			} else {
+				// Insert new time-logs entry
+				const timeLogEntry = `[time-logs:: ${currentTime}; ]`;
+				const dvIndex = this.plugin.findFirstInlineDataviewIndex(targetLine);
+				if (dvIndex !== -1) {
+					newLine = this.plugin.insertBeforeInlineDataview(targetLine, timeLogEntry);
+				} else {
+					const separator = targetLine.length > 0 && !/\s$/.test(targetLine) ? ' ' : '';
+					newLine = targetLine + separator + timeLogEntry;
+				}
+			}
+
+			// Update the line using the editor
+			editor.setLine(targetLineIndex, newLine);
+
+			// Update the recent task with new info
+			recentTask.fullLine = newLine;
+			recentTask.lineNumber = targetLineIndex;
+			recentTask.lastUsed = Date.now();
+			await this.plugin.saveSettings();
+
+			new Notice('Time log added successfully!');
+		} catch (error) {
+			console.error('Error adding time log to recent task:', error);
+			new Notice('Failed to add time log. Removing from recent tasks.');
+			this.removeFromRecentTasks(recentTask);
+		}
+	}
+
+	private removeFromRecentTasks(taskToRemove: RecentTask): void {
+		this.plugin.settings.recentTasks = this.plugin.settings.recentTasks.filter(task => 
+			!(task.filePath === taskToRemove.filePath && 
+			  task.taskSnippet === taskToRemove.taskSnippet &&
+			  task.lineNumber === taskToRemove.lineNumber)
+		);
+		this.plugin.saveSettings();
+	}
+}
+
 class TimeLogsSettingTab extends PluginSettingTab {
 	plugin: TimeLogsPlugin;
 
@@ -254,6 +563,18 @@ class TimeLogsSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.csvExportPath)
 					.onChange(async (value) => {
 						this.plugin.settings.csvExportPath = value.trim();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName('Auto-log on task completion')
+			.setDesc('When a task is checked as done, append a time log automatically.')
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoLogOnTaskDone)
+					.onChange(async (value) => {
+						this.plugin.settings.autoLogOnTaskDone = value;
 						await this.plugin.saveSettings();
 					})
 			);
