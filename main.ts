@@ -149,7 +149,9 @@ export default class TimeLogsPlugin extends Plugin {
 
 	private addToRecentTasks(filePath: string, fullLine: string, lineNumber: number) {
 		const taskText = this.normalizeTaskText(fullLine);
-		const taskSnippet = taskText.slice(0, 50);
+		// Clean the task text before creating snippet to avoid storing dataview entries
+		const cleanedTaskText = this.cleanTaskTextForStorage(taskText);
+		const taskSnippet = cleanedTaskText.slice(0, 50);
 		
 		// Remove existing entry for the same task if it exists
 		this.settings.recentTasks = this.settings.recentTasks.filter(task => 
@@ -170,6 +172,21 @@ export default class TimeLogsPlugin extends Plugin {
 		
 		// Save settings
 		this.saveSettings();
+	}
+
+	private cleanTaskTextForStorage(taskText: string): string {
+		let cleaned = taskText;
+		
+		// Remove all inline dataview entries [key:: value] before storing
+		cleaned = cleaned.replace(/\[[^:\[\]]+::[^\[\]]*\]/g, '');
+		
+		// Remove tags
+		cleaned = cleaned.replace(/#[\w\-_]+/g, '');
+		
+		// Remove extra whitespace and trim
+		cleaned = cleaned.replace(/\s+/g, ' ').trim();
+		
+		return cleaned;
 	}
 
 	private async initializeFileContentCache(): Promise<void> {
@@ -420,7 +437,31 @@ class RecentTaskModal extends FuzzySuggestModal<RecentTask> {
 
 	getItemText(item: RecentTask): string {
 		const fileName = item.filePath.split('/').pop() || item.filePath;
-		return `${item.taskSnippet} (${fileName})`;
+		const cleanTaskText = this.cleanTaskTextForDisplay(item.taskSnippet);
+		return `${cleanTaskText} (${fileName})`;
+	}
+
+	private cleanTaskTextForDisplay(taskText: string): string {
+		let cleaned = taskText;
+		
+		// Remove complete inline dataview entries [key:: value]
+		cleaned = cleaned.replace(/\[[^:\[\]]+::[^\[\]]*\]/g, '');
+		
+		// Remove incomplete dataview entries that might be cut off (like [time-logs::2025-08-30 -08:50; 2025-08-30 -)
+		cleaned = cleaned.replace(/\[[^:\[\]]*::[^\[\]]*$/g, '');
+		cleaned = cleaned.replace(/\[[^:\[\]]*::.*$/g, '');
+		
+		// Remove tags #tag (including tags with special characters)
+		cleaned = cleaned.replace(/#[\w\-_]+/g, '');
+		
+		// Remove any remaining incomplete brackets
+		cleaned = cleaned.replace(/\[[^\[\]]*$/g, ''); // Remove incomplete opening brackets at end
+		cleaned = cleaned.replace(/\[\s*\]/g, ''); // Remove empty brackets
+		
+		// Remove extra whitespace and trim
+		cleaned = cleaned.replace(/\s+/g, ' ').trim();
+		
+		return cleaned;
 	}
 
 	onChooseItem(item: RecentTask, evt: MouseEvent | KeyboardEvent): void {
